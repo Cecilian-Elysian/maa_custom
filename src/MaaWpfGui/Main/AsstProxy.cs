@@ -1392,14 +1392,11 @@ public class AsstProxy
 
                 Instances.TaskQueueViewModel.ResetAllTemporaryVariable();
 
-                // 账号轮换：正常完成时自动继续下一个账号
-                if (TaskQueueViewModel.StartUpTask.IsCycling && !_runningState.GetIdle())
+                // fix/account_rotation: 账号轮换推进下沉到 partial class,
+                // 返回 true 表示已推进并需 break 跳出 AllTasksCompleted handler。
+                if (Instances.TaskQueueViewModel.OnAllTasksCompleted(_runningState.GetIdle()))
                 {
-                    Instances.TaskQueueViewModel.AdvanceAccountCycle();
-                    if (TaskQueueViewModel.StartUpTask.IsCycling)
-                    {
-                        break;
-                    }
+                    break;
                 }
 
                 _runningState.SetIdle(true);

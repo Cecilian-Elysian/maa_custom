@@ -333,4 +333,124 @@ public partial class TaskQueueViewModel
     /// 防止 RebuildCycleSteps 生成全空步骤列表时的递归死循环.
     /// </summary>
     private int _consecutiveEmptySteps;
+
+    /// <summary>
+    /// fix/account_rotation + feat/defer-rogue + feat/account-scoped-recognition-data:
+    /// 把 <see cref="TaskQueueViewModel.LinkStart"/> 中插入的 ~50 行 fork 逻辑全部下沉到 partial class,
+    /// 主文件 LinkStart 收敛为: wait → PrepareCycleStart → LinkStartWithTasks → release。
+    /// 返回 true 表示调用方应继续走 LinkStartWithTasks;返回 false 表示已处理(轮换早退/全部完成)。
+    /// </summary>
+    public bool PrepareCycleStart()
+    {
+        var startUpConfig = StartUpTask;
+
+        // fix/defer-rogue/1: 防止轮换中途再次触发 LinkStart (Stop 后再次点击 / 定时器 / 快捷键),
+        // 避免 InitAccountCycleItems + RebuildCycleSteps 重置进度导致步骤丢失或重复。
+        if (startUpConfig.IsCycling)
+        {
+            return false;
+        }
+
+        startUpConfig.InitAccountCycleItems();
+
+        if (startUpConfig.AccountCycleEnabled && startUpConfig.AccountCycleItems.Any(x => x.IsSelected && !string.IsNullOrEmpty(x.AccountName)))
+        {
+            // 轮换模式：每次 LinkStart 只处理一个步骤 (account, phase)
+            startUpConfig.RebuildCycleSteps();
+            var firstStep = startUpConfig.CurrentStep;
+
+            startUpConfig.IsCycling = true;
+            if (firstStep != null)
+            {
+                var cfg = ConfigFactory.CurrentConfig.TaskQueue.OfType<StartUpTask>().FirstOrDefault();
+                if (cfg != null)
+                {
+                    cfg.AccountSwitchEnabled = true;
+                    cfg.AccountName = firstStep.AccountName?.Trim() ?? string.Empty;
+                    CurrentCycleAccountName = firstStep.AccountName?.Trim() ?? string.Empty;
+                    AddLog($"{LocalizationHelper.GetString("AccountCycleSwitchingTo")}{(firstStep.AccountName?.Trim() ?? string.Empty)} (Phase {firstStep.Phase})", UiLogColor.Info);
+                }
+                else
+                {
+                    startUpConfig.IsCycling = false;
+                }
+            }
+            else
+            {
+                AddLog(LocalizationHelper.GetString("AccountCycleAllDone"), UiLogColor.Info);
+                startUpConfig.IsCycling = false;
+            }
+        }
+        else
+        {
+            startUpConfig.ResetCycle();
+            CurrentCycleAccountName = string.Empty;
+        }
+
+        // feat/account-scoped-recognition-data: 运行前锚定干员/仓库识别数据桶到本次账号
+        // (轮换=首账号, 非轮换=配置账号, 无账号名时回落 _default 桶)
+        Instances.ToolboxViewModel.SwitchDataAccount(ConfigFactory.CurrentConfig.TaskQueue.OfType<StartUpTask>().FirstOrDefault()?.AccountName);
+
+        return true;
+    }
+
+    /// <summary>
+    /// fix/account_rotation/修改次数 + fix/account_rotation/6:
+    /// 把 <see cref="TaskQueueViewModel.SetStopped"/> 中插入的轮换状态保护 ~18 行下沉到 partial。
+    /// 返回 false 表示轮换继续(SetStopped 应早退);返回 true 表示已清理轮换,SetStopped 应继续原逻辑。
+    /// 末尾的 CurrentCycleAccountName 清空也由本方法处理(原位 SetStopped 末尾)。
+    /// </summary>
+    public bool HandleStopping(bool runStopScript)
+    {
+        if (StartUpTask.IsCycling)
+        {
+            if (_runningState.GetIdle())
+            {
+                StartUpTask.IsCycling = false;
+            }
+            else if (runStopScript && _runningState.GetStopping())
+            {
+                StartUpTask.IsCycling = false;
+            }
+            else
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// fix/account_rotation/6: SetStopped 末尾清理当前账号显示 (轮换继续的早退分支已提前 return, 不会走到这里)。
+    /// </summary>
+    public void ClearCurrentCycleAccountName()
+    {
+        CurrentCycleAccountName = string.Empty;
+    }
+
+    /// <summary>
+    /// feat/defer-rogue: LinkStartWithTasks 内的 LateStage 阶段过滤钩子。lateStageOn=false 时直接放行。
+    /// 主文件 foreach 仅保留: 现有 IsTaskEnable 检查 → 调本钩子 → 原 try/SerializeTask 块。
+    /// </summary>
+    public bool ShouldSkipByPhase(BaseTask item, bool lateStageOn, int currentPhase)
+    {
+        return lateStageOn && !IsInCurrentPhase(item.TaskType, currentPhase);
+    }
+
+    /// <summary>
+    /// fix/account_rotation: AsstProxy AllTasksCompleted 回调处的轮换推进钩子。
+    /// 返回 true 表示已轮换推进,调用方应 break 跳出 AllTasksCompleted handler;
+    /// 返回 false 表示非轮换/已结束/已空闲,调用方继续走原 SetIdle(true) 流程。
+    /// </summary>
+    public bool OnAllTasksCompleted(bool isIdle)
+    {
+        if (StartUpTask.IsCycling && !isIdle)
+        {
+            AdvanceAccountCycle();
+            return StartUpTask.IsCycling;
+        }
+
+        return false;
+    }
 }
