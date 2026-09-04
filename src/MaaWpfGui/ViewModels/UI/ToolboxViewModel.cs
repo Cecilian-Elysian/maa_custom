@@ -1,4 +1,4 @@
-// <copyright file="ToolboxViewModel.cs" company="MaaAssistantArknights">
+﻿// <copyright file="ToolboxViewModel.cs" company="MaaAssistantArknights">
 // Part of the MaaWpfGui project, maintained by the MaaAssistantArknights team (Maa Team)
 // Copyright (C) 2021-2025 MaaAssistantArknights Contributors
 //
@@ -54,7 +54,7 @@ namespace MaaWpfGui.ViewModels.UI;
 /// <summary>
 /// The view model of recruit.
 /// </summary>
-public class ToolboxViewModel : Screen
+public partial class ToolboxViewModel : Screen
 {
     private readonly RunningState _runningState;
     private static readonly ILogger _logger = Log.ForContext<ToolboxViewModel>();
@@ -84,7 +84,7 @@ public class ToolboxViewModel : Screen
         };
         _peepImageTimer.Elapsed += PeepImageTimerElapsed;
 
-        // 本类型由 Stylet IoC 容器管理，全应用生命周期唯一实例，订阅后无需取消订阅
+        // 鏈被鍨嬬敱 Stylet IoC 瀹瑰櫒绠＄悊锛屽叏搴旂敤鐢熷懡鍛ㄦ湡鍞竴瀹炰緥锛岃闃呭悗鏃犻渶鍙栨秷璁㈤槄
         LocalizationHelper.LanguageChanged += () => {
             DisplayName = LocalizationHelper.GetString("Toolbox");
             RecruitInfo = LocalizationHelper.GetString("RecruitmentRecognitionTip");
@@ -146,299 +146,6 @@ public class ToolboxViewModel : Screen
         set => SetAndNotify(ref _stopping, value);
     }
 
-    #region AccountScopedRecognitionData (feat/account-scoped-recognition-data)
-
-    private string _currentDataAccountKey = JsonDataKey.DefaultDataAccount;
-    private string? _currentDataAccountRaw;
-    private readonly HashSet<string> _knownDataAccountKeys = new(StringComparer.OrdinalIgnoreCase);
-
-    private ObservableCollection<GenericCombinedData<string>> _dataAccountList = [];
-
-    /// <summary>
-    /// Gets 账号数据查看下拉的选项列表 (Value = 桶 key, Display = 账号显示名)。
-    /// </summary>
-    public ObservableCollection<GenericCombinedData<string>> DataAccountList
-    {
-        get => _dataAccountList;
-        private set => SetAndNotify(ref _dataAccountList, value);
-    }
-
-    /// <summary>
-    /// Gets or sets 当前查看的账号数据桶 (UI 下拉绑定, 切换即重载对应账号数据)。
-    /// </summary>
-    public string SelectedDataAccount
-    {
-        get => _currentDataAccountKey;
-        set => SwitchDataAccount(value);
-    }
-
-    private GenericCombinedData<string>? _currentDataAccountOption;
-
-    /// <summary>
-    /// Gets or sets 当前账号选项 (ComboBox.SelectedItem 双向绑定, 集合替换后通过重新解析保证选中项可见)。
-    /// </summary>
-    public GenericCombinedData<string>? SelectedDataAccountOption
-    {
-        get => _currentDataAccountOption;
-        set
-        {
-            if (value is null || ReferenceEquals(value, _currentDataAccountOption))
-            {
-                return;
-            }
-
-            SwitchDataAccount(value.Value);
-        }
-    }
-
-    /// <summary>
-    /// Gets 当前查看账号的显示名 (用于在 ComboBox 旁明示当前选中, 不依赖 ComboBox 渲染状态)。
-    /// </summary>
-    public string CurrentDataAccountDisplayName
-    {
-        get
-        {
-            if (_currentDataAccountKey == JsonDataKey.DefaultDataAccount)
-            {
-                return LocalizationHelper.GetString("DataAccountDefault");
-            }
-
-            return _currentDataAccountRaw ?? GetDataAccountDisplayName(_currentDataAccountKey);
-        }
-    }
-
-    private string OperBoxBucketKey => AccountDataBucketKey(JsonDataKey.OperBoxData, _currentDataAccountKey);
-
-    private string DepotBucketKey => AccountDataBucketKey(JsonDataKey.DepotData, _currentDataAccountKey);
-
-    private static string AccountDataBucketKey(string baseKey, string accountKey) => $"{baseKey}_{accountKey}";
-
-    /// <summary>
-    /// 账号名 → 安全文件名。非法字符/控制字符替换为 '_'，超长截断，空值回落 _default。
-    /// </summary>
-    private static string SanitizeAccountKey(string? account)
-    {
-        var trimmed = account?.Trim();
-        if (string.IsNullOrEmpty(trimmed))
-        {
-            return JsonDataKey.DefaultDataAccount;
-        }
-
-        var invalid = Path.GetInvalidFileNameChars();
-        var sb = new StringBuilder(trimmed.Length);
-        foreach (var ch in trimmed)
-        {
-            sb.Append(char.IsControl(ch) || invalid.Contains(ch) ? '_' : ch);
-        }
-
-        var result = sb.ToString().Trim();
-        if (string.IsNullOrEmpty(result))
-        {
-            return JsonDataKey.DefaultDataAccount;
-        }
-
-        return result.Length > 48 ? result[..48] : result;
-    }
-
-    private static string? ResolveConfiguredAccountName()
-    {
-        try
-        {
-            return ConfigFactory.CurrentConfig?.TaskQueue?.OfType<StartUpTask>().FirstOrDefault()?.AccountName;
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// 启动时初始化: 迁移旧全局单份数据文件 → 当前配置账号桶, 并锚定初始桶。
-    /// </summary>
-    private void InitializeAccountScopedData()
-    {
-        var raw = ResolveConfiguredAccountName();
-        var key = SanitizeAccountKey(raw);
-        MigrateLegacyRecognitionData(key, raw);
-        _currentDataAccountKey = key;
-        _currentDataAccountRaw = string.IsNullOrWhiteSpace(raw) ? null : raw.Trim();
-        _knownDataAccountKeys.Add(key);
-    }
-
-    /// <summary>
-    /// 一次性迁移: data\OperBoxData.json / DepotData.json → data\OperBoxData_&lt;account&gt;.json, 旧文件改名 .bak 保留。
-    /// </summary>
-    private static void MigrateLegacyRecognitionData(string accountKey, string? rawAccountName)
-    {
-        try
-        {
-            foreach (var baseKey in new[] { JsonDataKey.OperBoxData, JsonDataKey.DepotData })
-            {
-                var legacyPath = Path.Combine(PathsHelper.DataDir, $"{baseKey}.json");
-                if (!File.Exists(legacyPath))
-                {
-                    continue;
-                }
-
-                var bucketKey = AccountDataBucketKey(baseKey, accountKey);
-                if (!JsonDataHelper.Exists(bucketKey))
-                {
-                    var content = JObject.Parse(File.ReadAllText(legacyPath));
-                    if (!string.IsNullOrEmpty(rawAccountName) && content.ContainsKey("account") == false)
-                    {
-                        content["account"] = rawAccountName;
-                    }
-
-                    JsonDataHelper.Set(bucketKey, content);
-                    _logger.Information("[DataAccount] migrated legacy {BaseKey} to bucket {Bucket}", baseKey, bucketKey);
-                }
-
-                File.Move(legacyPath, legacyPath + ".bak", true);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.Error(ex, "[DataAccount] legacy recognition data migration failed");
-        }
-    }
-
-    /// <summary>
-    /// 切换识别数据查看/写入的账号桶: 清内存 → 加载该账号桶数据。同桶时为 no-op。
-    /// </summary>
-    public void SwitchDataAccount(string? account, bool force = false)
-    {
-        var accountKey = SanitizeAccountKey(account);
-        if (!force && accountKey == _currentDataAccountKey)
-        {
-            return;
-        }
-
-        _currentDataAccountKey = accountKey;
-        _currentDataAccountRaw = string.IsNullOrWhiteSpace(account) ? null : account.Trim();
-        ClearOperBoxRecognitionData();
-        DepotResult.Clear();
-        ResetDepotRecognitionState();
-        LoadDepotDetails();
-        LoadOperBoxDetails();
-        OperBoxSelectedIndex = OperBoxNotHaveList.Count > 0 ? 0 : 1;
-        InvalidateDepotCache();
-        Instances.TaskQueueViewModel?.UpdateDatePrompt();
-        RefreshDataAccountList();
-        NotifyOfPropertyChange(nameof(SelectedDataAccount));
-        NotifyOfPropertyChange(nameof(CurrentDataAccountDisplayName));
-        _logger.Information("[DataAccount] switched recognition data bucket to {Account}", accountKey);
-    }
-
-    /// <summary>
-    /// 刷新账号下拉列表: 扫描 data 目录已有桶 + 轮换账号配置中尚无桶的账号 + 当前桶。
-    /// </summary>
-    public void RefreshDataAccountList()
-    {
-        try
-        {
-            var keys = new SortedSet<string>(StringComparer.OrdinalIgnoreCase)
-            {
-                JsonDataKey.DefaultDataAccount,
-                _currentDataAccountKey,
-            };
-
-            if (Directory.Exists(PathsHelper.DataDir))
-            {
-                foreach (var baseKey in new[] { JsonDataKey.OperBoxData, JsonDataKey.DepotData })
-                {
-                    var prefix = $"{baseKey}_";
-                    foreach (var file in Directory.EnumerateFiles(PathsHelper.DataDir, $"{prefix}*.json"))
-                    {
-                        var name = Path.GetFileName(file);
-                        if (name.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
-                        {
-                            name = name[..^5];
-                        }
-
-                        if (name.StartsWith(prefix, StringComparison.Ordinal))
-                        {
-                            name = name[prefix.Length..];
-                        }
-
-                        if (!string.IsNullOrEmpty(name))
-                        {
-                            keys.Add(name);
-                        }
-                    }
-                }
-            }
-
-            var configAccounts = ConfigFactory.CurrentConfig?.TaskQueue?.OfType<StartUpTask>()
-                .SelectMany(t => t.AccountNames ?? [])
-                .Where(a => !string.IsNullOrWhiteSpace(a))
-                .Select(SanitizeAccountKey) ?? [];
-            foreach (var key in configAccounts)
-            {
-                keys.Add(key);
-            }
-
-            DataAccountList = [.. keys.Select(k => new GenericCombinedData<string>(GetDataAccountDisplayName(k), k))];
-            foreach (var key in keys)
-            {
-                _knownDataAccountKeys.Add(key);
-            }
-
-            // 集合替换后重新解析当前选项引用, 保证 ComboBox.SelectedItem 在新集合中命中
-            _currentDataAccountOption = _dataAccountList.FirstOrDefault(i => i.Value == _currentDataAccountKey);
-            NotifyOfPropertyChange(nameof(SelectedDataAccountOption));
-            NotifyOfPropertyChange(nameof(CurrentDataAccountDisplayName));
-        }
-        catch (Exception ex)
-        {
-            _logger.Error(ex, "[DataAccount] failed to refresh data account list");
-        }
-    }
-
-    private string GetDataAccountDisplayName(string accountKey)
-    {
-        if (accountKey == JsonDataKey.DefaultDataAccount)
-        {
-            return LocalizationHelper.GetString("DataAccountDefault");
-        }
-
-        foreach (var baseKey in new[] { JsonDataKey.OperBoxData, JsonDataKey.DepotData })
-        {
-            var json = JsonDataHelper.Get(AccountDataBucketKey(baseKey, accountKey), string.Empty);
-            if (string.IsNullOrWhiteSpace(json))
-            {
-                continue;
-            }
-
-            try
-            {
-                var raw = JObject.Parse(json)["account"]?.ToString();
-                if (!string.IsNullOrWhiteSpace(raw))
-                {
-                    return raw;
-                }
-            }
-            catch
-            {
-                // 桶文件损坏时回落到文件名
-            }
-        }
-
-        return accountKey;
-    }
-
-    /// <summary>
-    /// 保存后若当前桶是新桶则刷新下拉列表。
-    /// </summary>
-    private void RegisterCurrentBucketIfNew()
-    {
-        if (_knownDataAccountKeys.Contains(_currentDataAccountKey) == false)
-        {
-            RefreshDataAccountList();
-        }
-    }
-
-    #endregion AccountScopedRecognitionData (feat/account-scoped-recognition-data)
-
     #region Recruit
 
     /// <summary>
@@ -455,7 +162,7 @@ public class ToolboxViewModel : Screen
         foreach (var combs in resultArray ?? [])
         {
             int tagLevel = (int)(combs["level"] ?? -1);
-            var tagStr = $"{tagLevel}★ Tags:    ";
+            var tagStr = $"{tagLevel}鈽?Tags:    ";
             tagStr = ((JArray?)combs["tags"] ?? []).Aggregate(tagStr, (current, tag) => current + $"{tag}    ");
             var tagRun = new Run(tagStr);
             tagRun.SetResourceReference(TextElement.ForegroundProperty, UiLogColor.Text);
@@ -659,7 +366,7 @@ public class ToolboxViewModel : Screen
 
     /// <summary>
     /// Starts calculation.
-    /// UI 绑定的方法
+    /// UI 缁戝畾鐨勬柟娉?
     /// </summary>
     /// <returns>Task</returns>
     [UsedImplicitly]
@@ -702,7 +409,7 @@ public class ToolboxViewModel : Screen
 
         var task = new AsstRecruitTask() {
             SelectList = levelList,
-            ConfirmList = [-1], // 仅公招识别时将-1加入comfirm_level
+            ConfirmList = [-1], // 浠呭叕鎷涜瘑鍒椂灏?1鍔犲叆comfirm_level
             SetRecruitTime = RecruitAutoSetTime,
             ChooseLevel3Time = ChooseLevel3Time,
             ChooseLevel4Time = ChooseLevel4Time,
@@ -766,12 +473,12 @@ public class ToolboxViewModel : Screen
     }
 
     /// <summary>
-    /// Gets or sets 上次仓库同步时间（UTC 时间）
+    /// Gets or sets 涓婃浠撳簱鍚屾鏃堕棿锛圲TC 鏃堕棿锛?
     /// </summary>
     public DateTimeOffset? LastDepotSyncTime { get => field; set => SetAndNotify(ref field, value); }
 
     /// <summary>
-    /// Gets 上次仓库同步时间的显示文本（本地时间）
+    /// Gets 涓婃浠撳簱鍚屾鏃堕棿鐨勬樉绀烘枃鏈紙鏈湴鏃堕棿锛?
     /// </summary>
     [PropertyDependsOn(nameof(LastDepotSyncTime))]
     public string LastDepotSyncTimeText
@@ -782,7 +489,7 @@ public class ToolboxViewModel : Screen
                 return string.Empty;
             }
 
-            // 将 UTC 时间转换为本地时间显示
+            // 灏?UTC 鏃堕棿杞崲涓烘湰鍦版椂闂存樉绀?
             return LastDepotSyncTime.Value.ToLocalTimeString();
         }
     }
@@ -823,7 +530,7 @@ public class ToolboxViewModel : Screen
 
     public int DepotColumnCount => GetColumnCount(DepotResult.Count, DepotRowSize);
 
-    // 缓存相关字段
+    // 缂撳瓨鐩稿叧瀛楁
     private bool _depotCacheInvalid = true;
     private string? _cachedArkPlannerResult;
     private string? _cachedLoliconResult;
@@ -838,7 +545,7 @@ public class ToolboxViewModel : Screen
     }
 
     /// <summary>
-    /// 标记仓库缓存失效
+    /// 鏍囪浠撳簱缂撳瓨澶辨晥
     /// </summary>
     private void InvalidateDepotCache()
     {
@@ -856,17 +563,17 @@ public class ToolboxViewModel : Screen
         public BitmapSource? Image { get; set; }
 
         /// <summary>
-        /// Gets or sets 物品数量（原始数值）
+        /// Gets or sets 鐗╁搧鏁伴噺锛堝師濮嬫暟鍊硷級
         /// </summary>
         public int Count { get; set; }
 
         /// <summary>
-        /// Gets 格式化后的显示数量（用于 UI 绑定）
+        /// Gets 鏍煎紡鍖栧悗鐨勬樉绀烘暟閲忥紙鐢ㄤ簬 UI 缁戝畾锛?
         /// </summary>
         public string? DisplayCount => Count >= 0 ? Count.FormatNumber(false) : null;
 
         /// <summary>
-        /// 创建后懒加载缓存的 sortId，避免每次比较都查字典。
+        /// 鍒涘缓鍚庢噿鍔犺浇缂撳瓨鐨?sortId锛岄伩鍏嶆瘡娆℃瘮杈冮兘鏌ュ瓧鍏搞€?
         /// </summary>
         private int? _cachedSortId;
 
@@ -877,10 +584,10 @@ public class ToolboxViewModel : Screen
                 : int.MaxValue;
 
         /// <summary>
-        /// 按游戏内置 sortId 排序（值越小越靠前），查不到的按 ID 文本兜底。
+        /// 鎸夋父鎴忓唴缃?sortId 鎺掑簭锛堝€艰秺灏忚秺闈犲墠锛夛紝鏌ヤ笉鍒扮殑鎸?ID 鏂囨湰鍏滃簳銆?
         /// </summary>
-        /// <param name="other">要比较的另一个 DepotResultDate 对象</param>
-        /// <returns>比较结果</returns>
+        /// <param name="other">瑕佹瘮杈冪殑鍙︿竴涓?DepotResultDate 瀵硅薄</param>
+        /// <returns>姣旇緝缁撴灉</returns>
         public int CompareTo(DepotResultDate? other)
         {
             if (other is null)
@@ -912,36 +619,33 @@ public class ToolboxViewModel : Screen
     }
 
     /// <summary>
-    /// 保存仓库详情数据
+    /// 淇濆瓨浠撳簱璇︽儏鏁版嵁
     /// </summary>
     private void SaveDepotDetails()
     {
-        // 构建简化格式：{"itemId": count}
+        // 鏋勫缓绠€鍖栨牸寮忥細{"itemId": count}
         var details = new JObject {
             ["done"] = true,
             ["data"] = JObject.FromObject(DepotResult.Where(item => item.Count >= 0).ToDictionary(item => item.Id, item => item.Count)),
         };
 
-        // feat/account-scoped-recognition-data: 记录数据所属账号原始名 (下拉显示用)
-        if (!string.IsNullOrEmpty(_currentDataAccountRaw))
-        {
-            details["account"] = _currentDataAccountRaw;
-        }
+        // feat/account-scoped-recognition-data: 记录数据所属账号原始名 (下拉显示用) - 见 partial class AccountScopedData
+        StampDepotAccountField(details);
 
-        // 保存同步时间为 UTC（如果有）
+        // 淇濆瓨鍚屾鏃堕棿涓?UTC锛堝鏋滄湁锛?
         if (LastDepotSyncTime.HasValue)
         {
-            details["syncTime"] = LastDepotSyncTime.Value.ToLocalTime().ToString("o"); // ISO 8601 格式
+            details["syncTime"] = LastDepotSyncTime.Value.ToLocalTime().ToString("o"); // ISO 8601 鏍煎紡
         }
 
-        // feat/account-scoped-recognition-data: 按当前账号桶保存
+        // feat/account-scoped-recognition-data: 鎸夊綋鍓嶈处鍙锋《淇濆瓨
         JsonDataHelper.Set(DepotBucketKey, details);
         RegisterCurrentBucketIfNew();
     }
 
     private void LoadDepotDetails()
     {
-        // feat/account-scoped-recognition-data: 从当前账号桶加载
+        // feat/account-scoped-recognition-data: 浠庡綋鍓嶈处鍙锋《鍔犺浇
         var json = JsonDataHelper.Get(DepotBucketKey, string.Empty);
         if (string.IsNullOrWhiteSpace(json))
         {
@@ -960,7 +664,7 @@ public class ToolboxViewModel : Screen
     }
 
     /// <summary>
-    /// Gets 获取 ArkPlanner 导出格式（带缓存）
+    /// Gets 鑾峰彇 ArkPlanner 瀵煎嚭鏍煎紡锛堝甫缂撳瓨锛?
     /// </summary>
     public string ArkPlannerResult
     {
@@ -970,13 +674,13 @@ public class ToolboxViewModel : Screen
                 return string.Empty;
             }
 
-            // 使用缓存
+            // 浣跨敤缂撳瓨
             if (!_depotCacheInvalid && _cachedArkPlannerResult != null)
             {
                 return _cachedArkPlannerResult;
             }
 
-            // 重新计算
+            // 閲嶆柊璁＄畻
             var items = DepotResult
                 .Where(item => item.Count >= 0)
                 .Select(item => new JObject {
@@ -991,13 +695,13 @@ public class ToolboxViewModel : Screen
             };
 
             _cachedArkPlannerResult = result.ToString(Formatting.None);
-            _depotCacheInvalid = false; // 标记缓存已更新
+            _depotCacheInvalid = false; // 鏍囪缂撳瓨宸叉洿鏂?
             return _cachedArkPlannerResult;
         }
     }
 
     /// <summary>
-    /// Gets 获取 工具箱 导出格式（带缓存）
+    /// Gets 鑾峰彇 宸ュ叿绠?瀵煎嚭鏍煎紡锛堝甫缂撳瓨锛?
     /// </summary>
     public string LoliconResult
     {
@@ -1007,13 +711,13 @@ public class ToolboxViewModel : Screen
                 return string.Empty;
             }
 
-            // 使用缓存
+            // 浣跨敤缂撳瓨
             if (!_depotCacheInvalid && _cachedLoliconResult != null)
             {
                 return _cachedLoliconResult;
             }
 
-            // 重新计算
+            // 閲嶆柊璁＄畻
             var depotData = new JObject();
             foreach (var item in DepotResult)
             {
@@ -1024,18 +728,18 @@ public class ToolboxViewModel : Screen
             }
 
             _cachedLoliconResult = depotData.ToString(Formatting.None);
-            _depotCacheInvalid = false; // 标记缓存已更新
+            _depotCacheInvalid = false; // 鏍囪缂撳瓨宸叉洿鏂?
             return _cachedLoliconResult;
         }
     }
 
     /// <summary>
-    /// 解析仓库识别结果（兼容新旧格式）
+    /// 瑙ｆ瀽浠撳簱璇嗗埆缁撴灉锛堝吋瀹规柊鏃ф牸寮忥級
     /// </summary>
-    /// <param name="details">详细的 JSON 参数</param>
-    /// <param name="updateSyncTime">是否更新同步时间为当前时间（从 Core 获取新数据时为 true，从本地加载时为 false）</param>
-    /// <param name="taskId">传入对应的任务 ID 以便在收到回调后重置识别状态</param>
-    /// <returns>是否成功</returns>
+    /// <param name="details">璇︾粏鐨?JSON 鍙傛暟</param>
+    /// <param name="updateSyncTime">鏄惁鏇存柊鍚屾鏃堕棿涓哄綋鍓嶆椂闂达紙浠?Core 鑾峰彇鏂版暟鎹椂涓?true锛屼粠鏈湴鍔犺浇鏃朵负 false锛?/param>
+    /// <param name="taskId">浼犲叆瀵瑰簲鐨勪换鍔?ID 浠ヤ究鍦ㄦ敹鍒板洖璋冨悗閲嶇疆璇嗗埆鐘舵€?/param>
+    /// <returns>鏄惁鎴愬姛</returns>
     public bool DepotParse(JObject? details, bool updateSyncTime = false, int taskId = 0)
     {
         if (details == null)
@@ -1052,7 +756,7 @@ public class ToolboxViewModel : Screen
 
         Dictionary<string, int> depotItems = [];
 
-        // 尝试解析新格式
+        // 灏濊瘯瑙ｆ瀽鏂版牸寮?
         var dataToken = details["data"];
         if (dataToken is JObject dataObj)
         {
@@ -1065,7 +769,7 @@ public class ToolboxViewModel : Screen
             }
         }
         else if (dataToken?.ToString() is string dataStr && !string.IsNullOrEmpty(dataStr))
-        { // 旧版格式迁移
+        { // 鏃х増鏍煎紡杩佺Щ
             try
             {
                 var dataO = JObject.Parse(dataStr);
@@ -1083,7 +787,7 @@ public class ToolboxViewModel : Screen
             }
         }
 
-        // 如果新格式解析失败，尝试旧格式
+        // 濡傛灉鏂版牸寮忚В鏋愬け璐ワ紝灏濊瘯鏃ф牸寮?
         if (depotItems.Count == 0)
         {
             if (depotItems.Count == 0)
@@ -1106,7 +810,7 @@ public class ToolboxViewModel : Screen
             }
         }
 
-        // 构建结果并检查成就，按游戏内置 sortId 排序
+        // 鏋勫缓缁撴灉骞舵鏌ユ垚灏憋紝鎸夋父鎴忓唴缃?sortId 鎺掑簭
         var results = depotItems.Select(kvp => new DepotResultDate {
             Id = kvp.Key,
             Name = ItemListHelper.GetItemName(kvp.Key),
@@ -1125,7 +829,7 @@ public class ToolboxViewModel : Screen
 
         DepotResult.AddRange(results);
 
-        // 标记缓存失效
+        // 鏍囪缂撳瓨澶辨晥
         InvalidateDepotCache();
 
         bool done = (bool)(details["done"] ?? false);
@@ -1136,13 +840,13 @@ public class ToolboxViewModel : Screen
 
         if (updateSyncTime)
         {
-            // 从 Core 获取新数据，更新为当前 UTC 时间
+            // 浠?Core 鑾峰彇鏂版暟鎹紝鏇存柊涓哄綋鍓?UTC 鏃堕棿
             AchievementTrackerHelper.Instance.CheckResyncAfterDays(LastDepotSyncTime?.UtcDateTime, 7, AchievementIds.ResumeRecord);
             LastDepotSyncTime = DateTimeOffset.UtcNow;
         }
         else
         {
-            // 从本地加载，读取保存的时间
+            // 浠庢湰鍦板姞杞斤紝璇诲彇淇濆瓨鐨勬椂闂?
             var syncTimeStr = details["syncTime"]?.ToString(Formatting.None)?.Trim('"');
             if (!string.IsNullOrEmpty(syncTimeStr) && DateTimeOffset.TryParse(syncTimeStr, null, DateTimeStyles.AssumeUniversal, out var lastDepotSyncTime))
             {
@@ -1158,7 +862,7 @@ public class ToolboxViewModel : Screen
     }
 
     /// <summary>
-    /// 仓库导出格式
+    /// 浠撳簱瀵煎嚭鏍煎紡
     /// </summary>
     public enum DepotExportFormat
     {
@@ -1184,7 +888,7 @@ public class ToolboxViewModel : Screen
     }
 
     /// <summary>
-    /// 干员BOX导出格式
+    /// 骞插憳BOX瀵煎嚭鏍煎紡
     /// </summary>
     public enum OperBoxExportFormat
     {
@@ -1240,7 +944,7 @@ public class ToolboxViewModel : Screen
 
     /// <summary>
     /// Export depot info to ArkPlanner.
-    /// UI 绑定的方法
+    /// UI 缁戝畾鐨勬柟娉?
     /// </summary>
     [UsedImplicitly]
     public void ExportToArkplanner()
@@ -1252,7 +956,7 @@ public class ToolboxViewModel : Screen
 
     /// <summary>
     /// Export depot info to Lolicon.
-    /// UI 绑定的方法
+    /// UI 缁戝畾鐨勬柟娉?
     /// </summary>
     [UsedImplicitly]
     public void ExportToLolicon()
@@ -1264,7 +968,7 @@ public class ToolboxViewModel : Screen
 
     /// <summary>
     /// Export depot info to Markdown file.
-    /// UI 绑定的方法
+    /// UI 缁戝畾鐨勬柟娉?
     /// </summary>
     [UsedImplicitly]
     public void ExportToMarkdown()
@@ -1274,7 +978,7 @@ public class ToolboxViewModel : Screen
 
     /// <summary>
     /// Export depot info to CSV file.
-    /// UI 绑定的方法
+    /// UI 缁戝畾鐨勬柟娉?
     /// </summary>
     [UsedImplicitly]
     public void ExportToCsv()
@@ -1343,28 +1047,28 @@ public class ToolboxViewModel : Screen
     }
     */
 
-    // 需要排除的物品 ID（不统计到仓库）
+    // 闇€瑕佹帓闄ょ殑鐗╁搧 ID锛堜笉缁熻鍒颁粨搴擄級
     private static readonly HashSet<string> ExcludedItemIds =
     [
-        "3401", // 家具
-        "3112", "3113", "3114", // 碳
-        "5001", // 经验
+        "3401", // 瀹跺叿
+        "3112", "3113", "3114", // 纰?
+        "5001", // 缁忛獙
     ];
 
     /// <summary>
-    /// 检查物品 ID 是否应该被排除（不统计到仓库）
+    /// 妫€鏌ョ墿鍝?ID 鏄惁搴旇琚帓闄わ紙涓嶇粺璁″埌浠撳簱锛?
     /// </summary>
-    /// <param name="itemId">物品 ID</param>
-    /// <returns>true 表示应该排除</returns>
+    /// <param name="itemId">鐗╁搧 ID</param>
+    /// <returns>true 琛ㄧず搴旇鎺掗櫎</returns>
     private static bool ShouldExcludeItem(string itemId)
     {
-        // 排除特定 ID
+        // 鎺掗櫎鐗瑰畾 ID
         if (ExcludedItemIds.Contains(itemId))
         {
             return true;
         }
 
-        // 排除非纯数字的 ID
+        // 鎺掗櫎闈炵函鏁板瓧鐨?ID
         if (!int.TryParse(itemId, out _))
         {
             return true;
@@ -1374,9 +1078,9 @@ public class ToolboxViewModel : Screen
     }
 
     /// <summary>
-    /// 根据 StageDrops 数据更新仓库
+    /// 鏍规嵁 StageDrops 鏁版嵁鏇存柊浠撳簱
     /// </summary>
-    /// <param name="drops">关卡掉落数据列表 (ItemId, ItemName, Total, Add)</param>
+    /// <param name="drops">鍏冲崱鎺夎惤鏁版嵁鍒楄〃 (ItemId, ItemName, Total, Add)</param>
     public void UpdateDepotFromDrops(List<(string ItemId, string ItemName, int Total, int Add)> drops)
     {
         if (drops == null || drops.Count == 0)
@@ -1384,11 +1088,10 @@ public class ToolboxViewModel : Screen
             return;
         }
 
-        // feat/account-scoped-recognition-data: 当前账号桶无基线 (从未仓库识别) 时丢弃掉落增量,
-        // 防止单局掉落被误当库存基数, 以及轮换切号后以上一账号库存为基数的跨账号数据合并
-        if (DepotResult.Count == 0 && LastDepotSyncTime == null)
+        // feat/account-scoped-recognition-data: 褰撳墠璐﹀彿妗舵棤鍩虹嚎 (浠庢湭浠撳簱璇嗗埆) 鏃朵涪寮冩帀钀藉閲?
+        // 闃叉鍗曞眬鎺夎惤琚褰撳簱瀛樺熀鏁? 浠ュ強杞崲鍒囧彿鍚庝互涓婁竴璐﹀彿搴撳瓨涓哄熀鏁扮殑璺ㄨ处鍙锋暟鎹悎骞?
+        if (ShouldSkipDepotDropsForEmptyBucket())
         {
-            _logger.Information("Depot drop update skipped: no baseline for account bucket {Account}", _currentDataAccountKey);
             return;
         }
 
@@ -1401,24 +1104,24 @@ public class ToolboxViewModel : Screen
                 continue;
             }
 
-            // 过滤不需要统计的物品
+            // 杩囨护涓嶉渶瑕佺粺璁＄殑鐗╁搧
             if (ShouldExcludeItem(itemId))
             {
                 continue;
             }
 
-            // 查找现有仓库项
+            // 鏌ユ壘鐜版湁浠撳簱椤?
             var existingItem = DepotResult.FirstOrDefault(x => x.Id == itemId);
             if (existingItem != null)
             {
-                // 更新现有物品数量
+                // 鏇存柊鐜版湁鐗╁搧鏁伴噺
                 if (existingItem.Count >= 0)
                 {
                     var newCount = existingItem.Count + add;
                     existingItem.Count = newCount;
                     hasUpdates = true;
 
-                    // 更新成就进度
+                    // 鏇存柊鎴愬氨杩涘害
                     if (newCount > AchievementTrackerHelper.Instance.GetProgress(AchievementIds.WarehouseMiser))
                     {
                         AchievementTrackerHelper.Instance.SetProgress(AchievementIds.WarehouseMiser, newCount);
@@ -1427,7 +1130,7 @@ public class ToolboxViewModel : Screen
             }
             else
             {
-                // 添加新物品
+                // 娣诲姞鏂扮墿鍝?
                 var newItem = new DepotResultDate {
                     Id = itemId,
                     Name = ItemListHelper.GetItemName(itemId),
@@ -1439,16 +1142,16 @@ public class ToolboxViewModel : Screen
             }
         }
 
-        // 如果有更新，重新排序并保存
+        // 濡傛灉鏈夋洿鏂帮紝閲嶆柊鎺掑簭骞朵繚瀛?
         if (hasUpdates)
         {
-            // 按游戏内置 sortId 排序
+            // 鎸夋父鎴忓唴缃?sortId 鎺掑簭
             DepotResult.Sort();
 
-            // 标记缓存失效
+            // 鏍囪缂撳瓨澶辨晥
             InvalidateDepotCache();
 
-            // 保存更新后的数据
+            // 淇濆瓨鏇存柊鍚庣殑鏁版嵁
             SaveDepotDetails();
             Instances.TaskQueueViewModel.UpdateDatePrompt();
 
@@ -1457,20 +1160,20 @@ public class ToolboxViewModel : Screen
     }
 
     /// <summary>
-    /// 重置仓库识别状态。
+    /// 閲嶇疆浠撳簱璇嗗埆鐘舵€併€?
     /// </summary>
     public void ResetDepotRecognitionState()
     {
-        // DepotParse 方法已经处理了数据清除和缓存失效，这里不需要重复调用
+        // DepotParse 鏂规硶宸茬粡澶勭悊浜嗘暟鎹竻闄ゅ拰缂撳瓨澶辨晥锛岃繖閲屼笉闇€瑕侀噸澶嶈皟鐢?
         // DepotClear();
         LastDepotSyncTime = null;
     }
 
     /// <summary>
-    /// 追加或启动仓库识别任务。
+    /// 杩藉姞鎴栧惎鍔ㄤ粨搴撹瘑鍒换鍔°€?
     /// </summary>
-    /// <param name="startImmediately">是否立刻启动。</param>
-    /// <returns>是否成功。</returns>
+    /// <param name="startImmediately">鏄惁绔嬪埢鍚姩銆?/param>
+    /// <returns>鏄惁鎴愬姛銆?/returns>
     public bool StartDepotRecognitionTask(bool startImmediately = true)
     {
         bool ret = Instances.AsstProxy.AsstStartDepot(startImmediately);
@@ -1484,13 +1187,13 @@ public class ToolboxViewModel : Screen
 
     /// <summary>
     /// Starts depot recognition.
-    /// UI 绑定的方法
+    /// UI 缁戝畾鐨勬柟娉?
     /// </summary>
     /// <returns>Task</returns>
     [UsedImplicitly]
     public async Task StartDepot()
     {
-        // feat/account-scoped-recognition-data: 手动识别前锚定回配置账号桶, 防止写入查看中的其他账号桶
+        // feat/account-scoped-recognition-data: 鎵嬪姩璇嗗埆鍓嶉敋瀹氬洖閰嶇疆璐﹀彿妗? 闃叉鍐欏叆鏌ョ湅涓殑鍏朵粬璐﹀彿妗?
         SwitchDataAccount(ResolveConfiguredAccountName());
         _runningState.SetIdle(false);
         string errMsg = string.Empty;
@@ -1512,12 +1215,12 @@ public class ToolboxViewModel : Screen
     #region OperBox
 
     /// <summary>
-    /// Gets or sets 上次干员同步时间
+    /// Gets or sets 涓婃骞插憳鍚屾鏃堕棿
     /// </summary>
     public DateTimeOffset? LastOperBoxSyncTime { get => field; set => SetAndNotify(ref field, value); }
 
     /// <summary>
-    /// Gets 上次干员同步时间的显示文本
+    /// Gets 涓婃骞插憳鍚屾鏃堕棿鐨勬樉绀烘枃鏈?
     /// </summary>
     [PropertyDependsOn(nameof(LastOperBoxSyncTime))]
     public string LastOperBoxSyncTimeText
@@ -1775,18 +1478,15 @@ public class ToolboxViewModel : Screen
             ["own_opers"] = JArray.FromObject(details),
         };
 
-        // feat/account-scoped-recognition-data: 记录数据所属账号原始名 (下拉显示用)
-        if (!string.IsNullOrEmpty(_currentDataAccountRaw))
-        {
-            data["account"] = _currentDataAccountRaw;
-        }
+        // feat/account-scoped-recognition-data: 璁板綍鏁版嵁鎵€灞炶处鍙峰師濮嬪悕 (涓嬫媺鏄剧ず鐢?
+        StampOperBoxAccountField(data);
 
         if (LastOperBoxSyncTime.HasValue)
         {
             data["syncTime"] = LastOperBoxSyncTime.Value.ToLocalTime().ToString("o");
         }
 
-        // feat/account-scoped-recognition-data: 按当前账号桶保存
+        // feat/account-scoped-recognition-data: 鎸夊綋鍓嶈处鍙锋《淇濆瓨
         JsonDataHelper.Set(OperBoxBucketKey, data);
         RegisterCurrentBucketIfNew();
     }
@@ -1815,9 +1515,9 @@ public class ToolboxViewModel : Screen
 
     private void LoadOperBoxDetails()
     {
-        // TODO: 删除老数据节省 gui.json 的大小，后续版本可以删除
+        // TODO: 鍒犻櫎鑰佹暟鎹妭鐪?gui.json 鐨勫ぇ灏忥紝鍚庣画鐗堟湰鍙互鍒犻櫎
         // var json = ConfigurationHelper.GetValue(ConfigurationKeys.OperBoxData, string.Empty);
-        // feat/account-scoped-recognition-data: 从当前账号桶加载
+        // feat/account-scoped-recognition-data: 浠庡綋鍓嶈处鍙锋《鍔犺浇
         var json = JsonDataHelper.Get(OperBoxBucketKey, string.Empty);
         if (string.IsNullOrWhiteSpace(json))
         {
@@ -1847,7 +1547,7 @@ public class ToolboxViewModel : Screen
         }
         catch
         {
-            // 兼容老数据或异常时忽略
+            // 鍏煎鑰佹暟鎹垨寮傚父鏃跺拷鐣?
         }
 
         void LoadOperBoxList(List<OperBoxData.OperData> ownOpers)
@@ -1881,7 +1581,7 @@ public class ToolboxViewModel : Screen
     }
 
     /// <summary>
-    /// 每次传进来的都是完整数据, 临时缓存去重
+    /// 姣忔浼犺繘鏉ョ殑閮芥槸瀹屾暣鏁版嵁, 涓存椂缂撳瓨鍘婚噸
     /// </summary>
     private HashSet<string> _tempOperHaveSet = [];
     private readonly HashSet<int> _pendingOperBoxRecognitionResetTaskIds = [];
@@ -1905,12 +1605,12 @@ public class ToolboxViewModel : Screen
     }
 
     /// <summary>
-    /// 解析干员识别结果
+    /// 瑙ｆ瀽骞插憳璇嗗埆缁撴灉
     /// </summary>
-    /// <param name="details">新增的干员数据</param>
-    /// <param name="updateSyncTime">是否更新同步时间（从 Core 获取新数据时为 true，从本地加载时为 false）</param>
-    /// <param name="taskId">传入对应的任务 ID 以便在收到回调后重置识别状态</param>
-    /// <returns>是否成功</returns>
+    /// <param name="details">鏂板鐨勫共鍛樻暟鎹?/param>
+    /// <param name="updateSyncTime">鏄惁鏇存柊鍚屾鏃堕棿锛堜粠 Core 鑾峰彇鏂版暟鎹椂涓?true锛屼粠鏈湴鍔犺浇鏃朵负 false锛?/param>
+    /// <param name="taskId">浼犲叆瀵瑰簲鐨勪换鍔?ID 浠ヤ究鍦ㄦ敹鍒板洖璋冨悗閲嶇疆璇嗗埆鐘舵€?/param>
+    /// <returns>鏄惁鎴愬姛</returns>
     public bool OperBoxParse(JObject? details, bool updateSyncTime = true, int taskId = 0)
     {
         if (details == null)
@@ -1985,7 +1685,7 @@ public class ToolboxViewModel : Screen
     }
 
     /// <summary>
-    /// 重置干员识别状态。
+    /// 閲嶇疆骞插憳璇嗗埆鐘舵€併€?
     /// </summary>
     public void ResetOperBoxRecognitionState()
     {
@@ -1994,10 +1694,10 @@ public class ToolboxViewModel : Screen
     }
 
     /// <summary>
-    /// 追加或启动干员识别任务。
+    /// 杩藉姞鎴栧惎鍔ㄥ共鍛樿瘑鍒换鍔°€?
     /// </summary>
-    /// <param name="startImmediately">是否立刻启动。</param>
-    /// <returns>是否成功。</returns>
+    /// <param name="startImmediately">鏄惁绔嬪埢鍚姩銆?/param>
+    /// <returns>鏄惁鎴愬姛銆?/returns>
     public bool StartOperBoxRecognitionTask(bool startImmediately = true)
     {
         bool ret = Instances.AsstProxy.AsstStartOperBox(startImmediately);
@@ -2010,14 +1710,14 @@ public class ToolboxViewModel : Screen
     }
 
     /// <summary>
-    /// 开始识别干员
-    /// UI 绑定的方法
+    /// 寮€濮嬭瘑鍒共鍛?
+    /// UI 缁戝畾鐨勬柟娉?
     /// </summary>
     /// <returns>Task</returns>
     [UsedImplicitly]
     public async Task StartOperBox()
     {
-        // feat/account-scoped-recognition-data: 手动识别前锚定回配置账号桶, 防止写入查看中的其他账号桶
+        // feat/account-scoped-recognition-data: 鎵嬪姩璇嗗埆鍓嶉敋瀹氬洖閰嶇疆璐﹀彿妗? 闃叉鍐欏叆鏌ョ湅涓殑鍏朵粬璐﹀彿妗?
         SwitchDataAccount(ResolveConfiguredAccountName());
         ResetOperBoxRecognitionState();
         _runningState.SetIdle(false);
@@ -2049,7 +1749,7 @@ public class ToolboxViewModel : Screen
         }
     } = ConfigFactory.CurrentConfig.Toolbox.OperBoxExportFormat;
 
-    // UI 绑定的方法
+    // UI 缁戝畾鐨勬柟娉?
     [UsedImplicitly]
     public void ExportOperBox()
     {
@@ -2230,13 +1930,13 @@ public class ToolboxViewModel : Screen
         set => SetAndNotify(ref _gachaInfo, value);
     }
 
-    // UI 绑定的方法
+    // UI 缁戝畾鐨勬柟娉?
     public async Task GachaOnce()
     {
         await StartGacha();
     }
 
-    // UI 绑定的方法
+    // UI 缁戝畾鐨勬柟娉?
     public async Task GachaTenTimes()
     {
         await StartGacha(false);
@@ -2290,10 +1990,10 @@ public class ToolboxViewModel : Screen
     }
 
     // DO NOT CHANGE
-    // 请勿更改
-    // 請勿更改
-    // このコードを変更しないでください
-    // 변경하지 마십시오
+    // 璇峰嬁鏇存敼
+    // 璜嬪嬁鏇存敼
+    // 銇撱伄銈炽兗銉夈倰澶夋洿銇椼仾銇勩仹銇忋仩銇曘亜
+    // 氤€瓴巾晿歆€ 毵堨嫮鞁滌槫
     private bool _gachaShowDisclaimer = true; // !ConfigurationHelper.GetValue(ConfigurationKeys.ShowDisclaimerNoMore, false);
 
     public bool GachaShowDisclaimer
@@ -2313,7 +2013,7 @@ public class ToolboxViewModel : Screen
         }
     }
 
-    // UI 绑定的方法
+    // UI 缁戝畾鐨勬柟娉?
     [UsedImplicitly]
     public void GachaAgreeDisclaimer()
     {
@@ -2360,7 +2060,7 @@ public class ToolboxViewModel : Screen
     private bool _isPeepInProgress;
 
     /// <summary>
-    /// Gets or sets a value indicating whether由 Peep 方法启动的 Peep
+    /// Gets or sets a value indicating whether鐢?Peep 鏂规硶鍚姩鐨?Peep
     /// </summary>
     public bool IsPeepInProgress
     {
@@ -2441,7 +2141,7 @@ public class ToolboxViewModel : Screen
     {
         if (!await _peepImageSemaphore.WaitAsync(0))
         {
-            // 一秒内连续三次未能获取信号量，降低 FPS
+            // 涓€绉掑唴杩炵画涓夋鏈兘鑾峰彇淇″彿閲忥紝闄嶄綆 FPS
             if (++_peepImageSemaphoreFailCount < 3)
             {
                 return;
@@ -2476,7 +2176,7 @@ public class ToolboxViewModel : Screen
                 return;
             }
 
-            // 若不满足条件，提前释放 frameData 避免内存泄露
+            // 鑻ヤ笉婊¤冻鏉′欢锛屾彁鍓嶉噴鏀?frameData 閬垮厤鍐呭瓨娉勯湶
             if (!Peeping || count <= _peepImageNewestCount)
             {
                 _logger.Debug("Peep image count {Count} is not the newest, skip updating image.", count);
@@ -2520,7 +2220,7 @@ public class ToolboxViewModel : Screen
     }
 
     /// <summary>
-    /// 获取或停止获取实时截图，在抽卡时额外停止抽卡
+    /// 鑾峰彇鎴栧仠姝㈣幏鍙栧疄鏃舵埅鍥撅紝鍦ㄦ娊鍗℃椂棰濆鍋滄鎶藉崱
     /// </summary>
     /// <returns>Task</returns>
     public async Task Peep()
@@ -2534,14 +2234,14 @@ public class ToolboxViewModel : Screen
 
         try
         {
-            // 正在 Peep 时，点击按钮停止 Peep
+            // 姝ｅ湪 Peep 鏃讹紝鐐瑰嚮鎸夐挳鍋滄 Peep
             if (Peeping)
             {
                 Peeping = false;
                 _peepImageTimer.Stop();
                 Array.Fill(_peepImageCache, null);
 
-                // 由 Peep() 方法启动的 Peep 也需要停止，Block 不会自动停止
+                // 鐢?Peep() 鏂规硶鍚姩鐨?Peep 涔熼渶瑕佸仠姝紝Block 涓嶄細鑷姩鍋滄
                 if (IsGachaInProgress || IsPeepInProgress)
                 {
                     await Instances.TaskQueueViewModel.Stop();
@@ -2553,12 +2253,12 @@ public class ToolboxViewModel : Screen
                 return;
             }
 
-            // 点击按钮开始 Peep
+            // 鐐瑰嚮鎸夐挳寮€濮?Peep
             Peeping = true;
 
             AchievementTrackerHelper.Instance.Unlock(AchievementIds.PeekScreen);
 
-            // 如果没任务在运行，需要先连接，并标记是由 Peep() 方法启动的 Peep
+            // 濡傛灉娌′换鍔″湪杩愯锛岄渶瑕佸厛杩炴帴锛屽苟鏍囪鏄敱 Peep() 鏂规硶鍚姩鐨?Peep
             if (Idle)
             {
                 _runningState.SetIdle(false);
@@ -2622,8 +2322,8 @@ public class ToolboxViewModel : Screen
     /// <summary>
     /// Gets the index of the selected mini game in the list.
     /// </summary>
-    // 注：MiniGameCategoryItems 在 UpdateMiniGameTaskList 中会 Clear+重建，若此刻未选中项已不在列表，
-    // IndexOf 返回 -1（随后由 setter 重新对齐）；
+    // 娉細MiniGameCategoryItems 鍦?UpdateMiniGameTaskList 涓細 Clear+閲嶅缓锛岃嫢姝ゅ埢鏈€変腑椤瑰凡涓嶅湪鍒楄〃锛?
+    // IndexOf 杩斿洖 -1锛堥殢鍚庣敱 setter 閲嶆柊瀵归綈锛夛紱
     [PropertyDependsOn(nameof(SelectedMiniGameItem))]
     public int SelectedMiniGameIndex => SelectedMiniGameItem is { } selected
         ? MiniGameCategoryItems.IndexOf(selected)
@@ -2710,19 +2410,19 @@ public class ToolboxViewModel : Screen
             return LocalizationHelper.GetString("MiniGameNameEmptyTip");
         }
 
-        // 优先使用 TipKey 的本地化
+        // 浼樺厛浣跨敤 TipKey 鐨勬湰鍦板寲
         if (!string.IsNullOrEmpty(entry.TipKey) && LocalizationHelper.TryGetString(entry.TipKey, out var tipFromKey))
         {
             return tipFromKey;
         }
 
-        // 然后使用 API Tip
+        // 鐒跺悗浣跨敤 API Tip
         if (!string.IsNullOrEmpty(entry.Tip))
         {
             return entry.Tip;
         }
 
-        // 若不存在 Tip，再尝试使用 DisplayKey + "Tip" 的约定键
+        // 鑻ヤ笉瀛樺湪 Tip锛屽啀灏濊瘯浣跨敤 DisplayKey + "Tip" 鐨勭害瀹氶敭
         if (!string.IsNullOrEmpty(entry.DisplayKey))
         {
             var displayTipKey = entry.DisplayKey + "Tip";
@@ -2731,7 +2431,7 @@ public class ToolboxViewModel : Screen
                 return displayTip;
             }
 
-            // 最后回退为 Display 的本地化或原始 Display
+            // 鏈€鍚庡洖閫€涓?Display 鐨勬湰鍦板寲鎴栧師濮?Display
             if (LocalizationHelper.TryGetString(entry.DisplayKey, out var displayLoc))
             {
                 return displayLoc;
@@ -2752,15 +2452,15 @@ public class ToolboxViewModel : Screen
 
     public LocalizedObservableList<string> SecretFrontEventList { get; } = new(
         (string.Empty, "NotSelected"),
-        ("支援作战平台", "MiniGame@SecretFront@Event1"),
-        ("游侠", "MiniGame@SecretFront@Event2"),
-        ("诡影迷踪", "MiniGame@SecretFront@Event3"));
+        ("鏀彺浣滄垬骞冲彴", "MiniGame@SecretFront@Event1"),
+        ("娓镐緺", "MiniGame@SecretFront@Event2"),
+        ("璇″奖杩疯釜", "MiniGame@SecretFront@Event3"));
 
     public string SecretFrontEvent { get; set => SetAndNotify(ref field, value); } = string.Empty;
 
     #region PixelPaint
 
-    /// <summary>像素画支持的图片扩展名，文件对话框过滤器与剪贴板文件判断共用。</summary>
+    /// <summary>鍍忕礌鐢绘敮鎸佺殑鍥剧墖鎵╁睍鍚嶏紝鏂囦欢瀵硅瘽妗嗚繃婊ゅ櫒涓庡壀璐存澘鏂囦欢鍒ゆ柇鍏辩敤銆?/summary>
     private static readonly string[] _pixelPaintImageExtensions = [".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif"];
 
     private BitmapSource? _pixelPaintSourceImage;
@@ -2793,7 +2493,7 @@ public class ToolboxViewModel : Screen
         private set => SetAndNotify(ref _pixelPaintParametersLocked, value);
     }
 
-    /// <summary>相对去边后内容图的归一化取景（0~1）。</summary>
+    /// <summary>鐩稿鍘昏竟鍚庡唴瀹瑰浘鐨勫綊涓€鍖栧彇鏅紙0~1锛夈€?/summary>
     private System.Windows.Rect _pixelPaintView = new(0, 0, 1, 1);
 
     private System.Windows.Point? _pixelPaintDragStart;
@@ -2871,10 +2571,10 @@ public class ToolboxViewModel : Screen
         }
     }
 
-    /// <summary>拖动绘制开关：同色同行连续格一次画完（更快，部分触控模式可能丢点）。</summary>
+    /// <summary>鎷栧姩缁樺埗寮€鍏筹細鍚岃壊鍚岃杩炵画鏍间竴娆＄敾瀹岋紙鏇村揩锛岄儴鍒嗚Е鎺фā寮忓彲鑳戒涪鐐癸級銆?/summary>
     public bool PixelPaintSwipeEnabled { get; set; } = true;
 
-    /// <summary>每格额外等待（ms），默认 0；点击后等待与拖动时长均会累加（各触控方式自带基础间隔）。</summary>
+    /// <summary>姣忔牸棰濆绛夊緟锛坢s锛夛紝榛樿 0锛涚偣鍑诲悗绛夊緟涓庢嫋鍔ㄦ椂闀垮潎浼氱疮鍔狅紙鍚勮Е鎺ф柟寮忚嚜甯﹀熀纭€闂撮殧锛夈€?/summary>
     public int PixelPaintGridDelay { get; set; } = 0;
 
     public void PixelPaintPickImage()
@@ -2926,13 +2626,13 @@ public class ToolboxViewModel : Screen
     }
 
     /// <summary>
-    /// 像素画：响应 Ctrl+V，从剪贴板粘贴。
-    /// 优先剪贴板位图（截图、浏览器 ｢复制图片｣ 等无文件场景），
-    /// 其次已复制的图片文件，最后剪贴板文字——文字会渲染成四角布局图片；
-    /// 加载失败时与文件加载一致地提示。
+    /// 鍍忕礌鐢伙細鍝嶅簲 Ctrl+V锛屼粠鍓创鏉跨矘璐淬€?
+    /// 浼樺厛鍓创鏉夸綅鍥撅紙鎴浘銆佹祻瑙堝櫒 锝㈠鍒跺浘鐗囷剑 绛夋棤鏂囦欢鍦烘櫙锛夛紝
+    /// 鍏舵宸插鍒剁殑鍥剧墖鏂囦欢锛屾渶鍚庡壀璐存澘鏂囧瓧鈥斺€旀枃瀛椾細娓叉煋鎴愬洓瑙掑竷灞€鍥剧墖锛?
+    /// 鍔犺浇澶辫触鏃朵笌鏂囦欢鍔犺浇涓€鑷村湴鎻愮ず銆?
     /// </summary>
-    /// <param name="sender">事件源（绑定 KeyDown 的 MiniGame Grid）。</param>
-    /// <param name="e">按键事件数据。</param>
+    /// <param name="sender">浜嬩欢婧愶紙缁戝畾 KeyDown 鐨?MiniGame Grid锛夈€?/param>
+    /// <param name="e">鎸夐敭浜嬩欢鏁版嵁銆?/param>
     public void PixelPaintKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key != Key.V || Keyboard.Modifiers != ModifierKeys.Control || !IsPixelPaintSelected || PixelPaintParametersLocked)
@@ -2960,7 +2660,7 @@ public class ToolboxViewModel : Screen
             }
             else if (Clipboard.ContainsText())
             {
-                // 复制的是文字：渲染成四角布局图片（取前 4 个字素）
+                // 澶嶅埗鐨勬槸鏂囧瓧锛氭覆鏌撴垚鍥涜甯冨眬鍥剧墖锛堝彇鍓?4 涓瓧绱狅級
                 var text = Clipboard.GetText().Trim();
                 if (text.Length > 0)
                 {
@@ -2970,18 +2670,18 @@ public class ToolboxViewModel : Screen
         }
         catch (Exception ex)
         {
-            // 剪贴板位图加载异常（如格式不被 Prepare 支持），与文件加载一致地提示
+            // 鍓创鏉夸綅鍥惧姞杞藉紓甯革紙濡傛牸寮忎笉琚?Prepare 鏀寔锛夛紝涓庢枃浠跺姞杞戒竴鑷村湴鎻愮ず
             _logger.Warning(ex, "Paste pixel paint image failed");
             PixelPaintStatusText = LocalizationHelper.GetString("MiniGame@PixelPaint@LoadFailed");
         }
     }
 
     /// <summary>
-    /// 从剪贴板取图。优先用 DIB 原始数据自行解码——
-    /// WPF 的 Clipboard.GetImage() 对 DIB 的转换存在通道错乱/尺寸错乱问题，
-    /// 重建 BMP 文件头自行解码可规避该缺陷；失败则回退到 GetImage()。
+    /// 浠庡壀璐存澘鍙栧浘銆備紭鍏堢敤 DIB 鍘熷鏁版嵁鑷瑙ｇ爜鈥斺€?
+    /// WPF 鐨?Clipboard.GetImage() 瀵?DIB 鐨勮浆鎹㈠瓨鍦ㄩ€氶亾閿欎贡/灏哄閿欎贡闂锛?
+    /// 閲嶅缓 BMP 鏂囦欢澶磋嚜琛岃В鐮佸彲瑙勯伩璇ョ己闄凤紱澶辫触鍒欏洖閫€鍒?GetImage()銆?
     /// </summary>
-    /// <returns>解码后的 BitmapSource；剪贴板无图或解码失败时返回 null。</returns>
+    /// <returns>瑙ｇ爜鍚庣殑 BitmapSource锛涘壀璐存澘鏃犲浘鎴栬В鐮佸け璐ユ椂杩斿洖 null銆?/returns>
     private static BitmapSource? GetClipboardImage()
     {
         try
@@ -3007,11 +2707,11 @@ public class ToolboxViewModel : Screen
     }
 
     /// <summary>
-    /// 将剪贴板 DIB（BITMAPINFOHEADER + 调色板 + 像素数据）解码为 BitmapSource：
-    /// 在前面补一个 14 字节的 BITMAPFILEHEADER，拼成完整 BMP 后交给解码器。
+    /// 灏嗗壀璐存澘 DIB锛圔ITMAPINFOHEADER + 璋冭壊鏉?+ 鍍忕礌鏁版嵁锛夎В鐮佷负 BitmapSource锛?
+    /// 鍦ㄥ墠闈㈣ˉ涓€涓?14 瀛楄妭鐨?BITMAPFILEHEADER锛屾嫾鎴愬畬鏁?BMP 鍚庝氦缁欒В鐮佸櫒銆?
     /// </summary>
-    /// <param name="dib">剪贴板 DIB 数据流（BITMAPINFOHEADER + 调色板 + 像素）。</param>
-    /// <returns>解码后的 BitmapSource；数据非法或过短时返回 null。</returns>
+    /// <param name="dib">鍓创鏉?DIB 鏁版嵁娴侊紙BITMAPINFOHEADER + 璋冭壊鏉?+ 鍍忕礌锛夈€?/param>
+    /// <returns>瑙ｇ爜鍚庣殑 BitmapSource锛涙暟鎹潪娉曟垨杩囩煭鏃惰繑鍥?null銆?/returns>
     private static BitmapSource? DecodeDibAsBmp(Stream dib)
     {
         if (dib.Length < 40)
@@ -3019,7 +2719,7 @@ public class ToolboxViewModel : Screen
             return null;
         }
 
-        // 读取 BITMAPINFOHEADER 固定前 40 字节，计算像素数据在文件中的偏移
+        // 璇诲彇 BITMAPINFOHEADER 鍥哄畾鍓?40 瀛楄妭锛岃绠楀儚绱犳暟鎹湪鏂囦欢涓殑鍋忕Щ
         var info = new byte[40];
         dib.Position = 0;
         dib.ReadExactly(info, 0, info.Length);
@@ -3035,7 +2735,7 @@ public class ToolboxViewModel : Screen
             return null;
         }
 
-        // 构造 BMP 文件头：'BM' 标志、文件总长度、像素数据偏移
+        // 鏋勯€?BMP 鏂囦欢澶达細'BM' 鏍囧織銆佹枃浠舵€婚暱搴︺€佸儚绱犳暟鎹亸绉?
         var header = new byte[14];
         header[0] = (byte)'B';
         header[1] = (byte)'M';
@@ -3064,7 +2764,7 @@ public class ToolboxViewModel : Screen
             return;
         }
 
-        // 滚轮缩放取景：向上放大（缩小 view），向下缩小（放大 view）
+        // 婊氳疆缂╂斁鍙栨櫙锛氬悜涓婃斁澶э紙缂╁皬 view锛夛紝鍚戜笅缂╁皬锛堟斁澶?view锛?
         var factor = e.Delta > 0 ? 0.9 : 1.0 / 0.9;
         var cx = _pixelPaintView.X + (_pixelPaintView.Width / 2);
         var cy = _pixelPaintView.Y + (_pixelPaintView.Height / 2);
@@ -3111,7 +2811,7 @@ public class ToolboxViewModel : Screen
         var dx = (pos.X - _pixelPaintDragStart.Value.X) / Math.Max(1.0, el.ActualWidth);
         var dy = (pos.Y - _pixelPaintDragStart.Value.Y) / Math.Max(1.0, el.ActualHeight);
 
-        // 拖图像：鼠标右移时内容左移（view.X 减小）
+        // 鎷栧浘鍍忥細榧犳爣鍙崇Щ鏃跺唴瀹瑰乏绉伙紙view.X 鍑忓皬锛?
         var nx = Math.Clamp(_pixelPaintDragOriginView.X - (dx * _pixelPaintDragOriginView.Width), 0, 1 - _pixelPaintDragOriginView.Width);
         var ny = Math.Clamp(_pixelPaintDragOriginView.Y - (dy * _pixelPaintDragOriginView.Height), 0, 1 - _pixelPaintDragOriginView.Height);
         _pixelPaintView = new System.Windows.Rect(nx, ny, _pixelPaintDragOriginView.Width, _pixelPaintDragOriginView.Height);

@@ -1926,55 +1926,14 @@ public partial class TaskQueueViewModel : Screen
         using var log = new LogScope(_logger);
         await TaskQueueSerializingLock.WaitAsync();
 
-        var startUpConfig = TaskQueueViewModel.StartUpTask;
-
-        // fix/defer-rogue/1: 防止轮换中途再次触发 LinkStart (Stop 后再次点击 / 定时器 / 快捷键),
-        // 避免 InitAccountCycleItems + RebuildCycleSteps 重置进度导致步骤丢失或重复。
-        if (startUpConfig.IsCycling)
+        // fix/account_rotation + feat/defer-rogue + feat/account-scoped-recognition-data:
+        // 全部下沉到 partial class TaskQueueViewModel.AccountCycle.PrepareCycleStart,
+        // 主文件 LinkStart 仅留 wait → prepare → LinkStartWithTasks → release 四步。
+        if (!PrepareCycleStart())
         {
             TaskQueueSerializingLock.Release();
             return;
         }
-
-        startUpConfig.InitAccountCycleItems();
-
-        if (startUpConfig.AccountCycleEnabled && startUpConfig.AccountCycleItems.Any(x => x.IsSelected && !string.IsNullOrEmpty(x.AccountName)))
-        {
-            // 轮换模式：每次 LinkStart 只处理一个步骤 (account, phase)
-            startUpConfig.RebuildCycleSteps();
-            var firstStep = startUpConfig.CurrentStep;
-
-            startUpConfig.IsCycling = true;
-            if (firstStep != null)
-            {
-                var cfg = ConfigFactory.CurrentConfig.TaskQueue.OfType<StartUpTask>().FirstOrDefault();
-                if (cfg != null)
-                {
-                    cfg.AccountSwitchEnabled = true;
-                    cfg.AccountName = firstStep.AccountName?.Trim() ?? string.Empty;
-                    CurrentCycleAccountName = firstStep.AccountName?.Trim() ?? string.Empty;
-                    AddLog($"{LocalizationHelper.GetString("AccountCycleSwitchingTo")}{(firstStep.AccountName?.Trim() ?? string.Empty)} (Phase {firstStep.Phase})", UiLogColor.Info);
-                }
-                else
-                {
-                    startUpConfig.IsCycling = false;
-                }
-            }
-            else
-            {
-                AddLog(LocalizationHelper.GetString("AccountCycleAllDone"), UiLogColor.Info);
-                startUpConfig.IsCycling = false;
-            }
-        }
-        else
-        {
-            startUpConfig.ResetCycle();
-            CurrentCycleAccountName = string.Empty;
-        }
-
-        // feat/account-scoped-recognition-data: 运行前锚定干员/仓库识别数据桶到本次账号
-        // (轮换=首账号, 非轮换=配置账号, 无账号名时回落 _default 桶)
-        Instances.ToolboxViewModel.SwitchDataAccount(ConfigFactory.CurrentConfig.TaskQueue.OfType<StartUpTask>().FirstOrDefault()?.AccountName);
 
         await LinkStartWithTasks(ConfigFactory.CurrentConfig.TaskQueue);
         TaskQueueSerializingLock.Release();
@@ -2115,6 +2074,7 @@ public partial class TaskQueueViewModel : Screen
 
         // 直接遍历TaskItemViewModels里面的内容，是排序后的
         int count = 0;
+        // feat/defer-rogue: 按阶段过滤钩子下沉到 partial class (lateStageOn=false 时 no-op)
         bool lateStageOn = StartUpTask.LateStageRogueAndReclamation;
         int currentPhase = StartUpTask.CurrentPhase;
         foreach (var item in tasks)
@@ -2131,8 +2091,8 @@ public partial class TaskQueueViewModel : Screen
                 continue;
             }
 
-            // feat/defer-rogue: 按阶段过滤, LateStage 关闭时此过滤为 no-op
-            if (lateStageOn && !IsInCurrentPhase(item.TaskType, currentPhase))
+            // feat/defer-rogue: 按阶段过滤钩子 (见 AccountCycle.ShouldSkipByPhase)
+            if (ShouldSkipByPhase(item, lateStageOn, currentPhase))
             {
                 continue;
             }
@@ -2317,27 +2277,14 @@ public partial class TaskQueueViewModel : Screen
     /// <returns>是否实际执行了状态重置（false 表示被幂等保护跳过）。</returns>
     public bool SetStopped(bool runStopScript = true)
     {
-        // 幂等保护：已经空闲且不在停止中，跳过
-        // fix/account_rotation/修改次数: 先处理轮换状态,再处理空闲判断。
-        // 当 IsCycling=true 且 Idle=true 时,说明来自 LinkStartWithTasks
-        // (count==0 / 版本不匹配等) 的早退路径已设 Idle 但未重置 Cycling,
-        // 需在此处清理 Cycling 让正常停止逻辑接管,否则轮换会永久卡住。
-        if (StartUpTask.IsCycling)
+        // fix/account_rotation/修改次数 + fix/account_rotation/6:
+        // 轮换状态保护下沉到 AccountCycle.HandleStopping (返回 false 表示轮换继续早退)。
+        if (!HandleStopping(runStopScript))
         {
-            if (_runningState.GetIdle())
-            {
-                StartUpTask.IsCycling = false;
-            }
-            else if (runStopScript && _runningState.GetStopping())
-            {
-                StartUpTask.IsCycling = false;
-            }
-            else
-            {
-                return true;
-            }
+            return true;
         }
 
+        // 幂等保护：已经空闲且不在停止中，跳过
         // 防止超时 SetStopped 后 Core 延迟回调再次触发导致打断新任务
         if (_runningState.GetIdle() && !_runningState.GetStopping())
         {
@@ -2360,13 +2307,15 @@ public partial class TaskQueueViewModel : Screen
         _runningState.SetIdle(true);
 
         // fix/account_rotation/6: 停止时清空当前账号显示 (轮换继续的早退分支已提前 return, 不会走到这里)
-        CurrentCycleAccountName = string.Empty;
+        ClearCurrentCycleAccountName();
 
         return true;
     }
 
-    // fix/account_rotation/6: AdvanceAccountCycle + IsInCurrentPhase + MarkPreviousStepCompleted +
-    // _consecutiveEmptySteps 已提取到 partial class TaskQueueViewModel.AccountCycle.cs,
+    // fix/account_rotation + feat/defer-rogue + feat/account-scoped-recognition-data:
+    // AdvanceAccountCycle + IsInCurrentPhase + MarkPreviousStepCompleted + _consecutiveEmptySteps
+    // + PrepareCycleStart + HandleStopping + ClearCurrentCycleAccountName + ShouldSkipByPhase
+    // 已下沉到 partial class TaskQueueViewModel.AccountCycle.cs,
     // 减少与 upstream/master-v2 合并时本文件的冲突面 (下游 [HOT] 详见 docs/downstream-changes.md)。
 
     public bool EnableSetFightParams { get; set; } = true;

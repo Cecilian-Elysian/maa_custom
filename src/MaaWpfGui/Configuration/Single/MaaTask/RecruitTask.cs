@@ -25,7 +25,7 @@ namespace MaaWpfGui.Configuration.Single.MaaTask;
 /// <summary>
 /// 公招
 /// </summary>
-public class RecruitTask : BaseTask, IJsonOnDeserialized
+public partial class RecruitTask : BaseTask, IJsonOnDeserialized
 {
     public RecruitTask() => TaskType = TaskType.Recruit;
 
@@ -34,35 +34,8 @@ public class RecruitTask : BaseTask, IJsonOnDeserialized
     /// </summary>
     public bool? UseExpedited { get; set; } = false;
 
-    /// <summary>
-    /// Gets or sets 加急招募门槛：仅当组合最低星级 ≥ 此值时使用加急许可
-    /// 0 = 所有星级均加急（默认，向后兼容）；4 / 5 / 6 = 对应星级阈值
-    /// </summary>
-    public int ExpediteMinLevel { get; set; } = 0;
-
-    /// <summary>
-    /// Gets or sets 加急招募模式（合并总开关与星级门槛）由 ViewModel 维护：
-    /// 0 = 不使用加急；1 = 所有星级均加急；4 / 5 / 6 = 仅对应星级及以上使用加急
-    /// </summary>
-    [JsonIgnore]
-    public int ExpediteMode
-    {
-        get {
-            if (UseExpedited is false) {
-                return 0;
-            }
-            return ExpediteMinLevel == 0 ? 1 : ExpediteMinLevel;
-        }
-        set {
-            bool expedited = value != 0;
-            UseExpedited = expedited;
-            ExpediteMinLevel = value switch {
-                0 => 0,
-                1 => 0,
-                int v => v,
-            };
-        }
-    }
+    // feat/expedite-threshold: 加急门槛 ExpediteMinLevel + 计算属性 ExpediteMode 已下沉到 partial class
+    // RecruitTask.Expedite.cs (见 [JsonIgnore] 注释). 减少与 upstream/master-v2 合并时本文件的冲突面。
 
     /// <summary>
     /// Gets or sets 单轮最大公招次数
