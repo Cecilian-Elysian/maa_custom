@@ -9976,10 +9976,10 @@
     "DepotAllTab": {
         "action": "ClickSelf",
         "roi": [
-            452,
+            450,
             0,
-            281,
-            134
+            300,
+            138
         ],
         "next": [
             "DepotMaterialTab"
@@ -9988,9 +9988,9 @@
     "DepotMaterialTab": {
         "action": "ClickSelf",
         "roi": [
-            1026,
+            945,
             0,
-            254,
+            300,
             138
         ],
         "next": [
@@ -9999,9 +9999,9 @@
     },
     "DepotMaterialTabClicked": {
         "roi": [
-            1026,
+            945,
             0,
-            254,
+            300,
             138
         ]
     },
