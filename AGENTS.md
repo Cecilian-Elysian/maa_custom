@@ -173,6 +173,22 @@ staging ──── feat/<name>, fix/<name> ← 从 staging 拉出
 
 `src/MaaWpfGui/Res/Localizations/` 五语同步：zh-cn / zh-tw / en-us / ja-jp / ko-kr。新增 UI 文案 / ToolTip 同步在五份 xaml 中新增对应 string key。
 
+### 3.5 识别类故障排查 SOP：先查上游修复（2026-09-07 沉淀）
+
+**适用症状**：某识别 / 导航功能突然持续失败（多账号多主题全量复现），而 MAA 侧代码、模板、配置、分辨率均零改动。
+
+**排查顺序**（先 2 后 3，避免重复造轮子）：
+
+| # | 步骤 | 说明 |
+|---|------|------|
+| 1 | 本地排除 | 确认 install 与 repo 资源哈希一致、构建未变、分辨率 / 模拟器未变、cache 在线资源不含相关任务定义 → 锁定「游戏侧画面变了」 |
+| 2 | **查上游是否已修** | GitHub API 按路径过滤 commits（最高效）：`https://api.github.com/repos/MaaAssistantArknights/MaaAssistantArknights/commits?sha=dev-v2&path=resource/template/<功能目录>&per_page=10`，对比 commit 时间与故障起点；同时搜上游 issues（游戏 UI 改版通常会引发用户反馈）。修复常在故障起点 1~2 天内出现（上游维护者也在玩） |
+| 3 | 摘取或自截 | 上游已修 → 新建 fix 分支手动摘取（ROI 数值照抄 + raw.githubusercontent.com 下载 `<commit>/resource/template/...` PNG，优先取其后 Auto Templates Optimization 终版）；上游未修 → 从 `debug/interface/` 失败帧自截模板，并用 NCC 离线验证 ≥0.9 再部署 |
+
+**案例**：`fix/depot-special-memorial-tab`（§7.18）——游戏新增「特别纪念」tab 致仓库识别全挂，上游 `da5ccfe4ed` 在故障起点次日即修复（且不在 v6.17.0 release 内，master-v2 拿不到，必须手动摘）。注意：**模板 PNG 不走在线资源更新**（cache 仅 tasks.json），等自更新等不来模板修复。
+
+**离线验证技巧**：PowerShell + System.Drawing 自写 NCC（归一化互相关），对 `debug/interface/` 失败帧 × 新模板算分，部署前即可确认模板有效性；失败帧摄于「初始未点击」态时，选中态模板（如 `DepotAllTab`）测不出高分属正常，信任上游已实测路径。
+
 
 ## 4. 构建、部署与发布
 
@@ -500,6 +516,21 @@ Select-String -Path install-staging/MAA.runtimeconfig.json -Pattern "STARTUP_HOO
 | 验证 | install-staging 部署（`MAA.exe` 时间戳与合并前一致因仅 C# / XAML 改动）；`dotnet build` 0 错误 / 60 warning（8 新增 CS8632 ×4 nullable 注解 + SA1516 ×4 + SA1512 ×2，52 预存 warning pre-existing）；信任 staging 验证（修改纯 WPF C# + XAML + 5 语 localization + DiagnosticInfo.cs 数据模型），后续 staging → branch 晋升需实测：启动不闪退 + 设置页问题反馈 Tab 渲染正常 + 点击生成诊断报告异步执行 + 大报告按大小统一切分 + 5 语 xaml 文案正确 |
 | 作用域 | 仅本仓库 fork 私有，不推 upstream |
 | 详见 | `LOG.md` 2026-08-16（fix/diagnostic-export-refactor 启动 / 实施完成 / 合入 staging 三段） |
+
+### 7.18 fix/depot-special-memorial-tab（2026-09-07 已合入 staging）
+
+| 项 | 内容 |
+|----|------|
+| 用途 | 修复「仓库识别」自 2026-09-05 起持续 TaskChainError：游戏在仓库页新增「特别纪念」tab 致标签栏重排，`DepotMaterialTab` / `DepotAllTab` 老模板与老 ROI 全部失配 |
+| 根因 | 游戏侧 2026-09-04 前后内容更新加 tab（非版本更新，用户无感知）；同一 09-03 18:19 构建二进制 09-03 18:42 成功（`DepotMaterialTab.png` 0.9927）、09-05 起全失败；NCC 实测失败帧老模板仅 0.4613 / 0.2504 且最高分位置仍在原 ROI 内 → 标签栏位置未变、像素内容已变 |
+| 修复 | 摘取上游 dev-v2 `da5ccfe4ed`（fix: 增加特别纪念 tab 后仓库识别报错，2026-09-04 16:48 +0800，**不在 v6.17.0 release 内**）+ `30ff4de669`（Auto Templates Optimization PNG 终版）：`tasks.json` 3 处 ROI（DepotAllTab `[452,0,281,134]`→`[450,0,300,138]`、DepotMaterialTab / DepotMaterialTabClicked `[1026,0,254,138]`→`[945,0,300,138]`）+ `resource/template/Depot/` 3 张 PNG 重截（77x34 / 131x33 / 120x34），仅资源零代码 |
+| 生命周期 | 2026-09-07 创建（从 staging 拉出） → 2026-09-07 `--no-ff` 合入 `staging`（`f580d7ed6d`） |
+| 关键 commit | `bba10f5675` |
+| 子修复分支 | 无（独立 fix） |
+| 验证 | 离线 NCC：新 `DepotMaterialTab` 对 09-05 / 09-07 失败帧均 0.9117（≥0.9 阈值）；`DepotAllTab` 失败帧摄于初始未点击态测不出高分属正常（信任上游实测）；部署后待实机跑「仓库识别」 |
+| 上游收敛 | 上游下个 release（v6.17.1+）携带同一改动，届时 WORKFLOW.md 同步自然收敛，无冲突风险 |
+| 作用域 | 仅资源同步上游修复，不推 upstream（上游已有） |
+| 详见 | `LOG.md` 2026-09-07（启动 / 实施完成 / 合入 staging 三段）；排查方法论沉淀于 §3.5 |
 
 
 ## 8. 关键参考链接

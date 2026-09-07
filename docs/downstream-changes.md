@@ -18,7 +18,7 @@
 py tools/gen-downstream-changes.py
 ```
 
-共扫描 470 个表格行，聚合出 62 个唯一源文件路径。
+共扫描 474 个表格行，聚合出 65 个唯一源文件路径。
 
 ## 仓库根（2 个文件）
 
@@ -110,7 +110,7 @@ py tools/gen-downstream-changes.py
 | 淇敼 | 浜旇鍚屾锛氱箒涓? |
 | 同上（繁体） | 同上 |
 
-## `resource/`（3 个文件）
+## `resource/`（6 个文件）
 
 ### [TGT] `resource/minitouch/x86/minitouch` 
 
@@ -118,7 +118,7 @@ py tools/gen-downstream-changes.py
 |------|------|
 | 补图 | 34260 B，fork Initial commit 起缺失；`git checkout master --` 恢复（commit `bc3f4a2a2a`） |
 
-### [HOT] `resource/tasks/tasks.json` (x7)
+### [HOT] `resource/tasks/tasks.json` (x8)
 
 | 操作 | 说明 |
 |------|------|
@@ -129,6 +129,25 @@ py tools/gen-downstream-changes.py
 | 寰呬慨鏀? | `AccountManagerOfficial` 琛?OcrDetect 璇嗗埆銆岀櫥褰曡褰曘€? |
 | 淇敼 | `AccountManagerOfficial` 鐢?`{"roi":[570,165,140,80]}` 琛ュ叏涓?`{"Doc":"瀹樻柟鏈嶈处鍙峰垏鎹㈢晫闈㈣瘑鍒紝涓?B 鏈嶇粺涓€ OCR銆岀櫥褰曡褰曘€?,"algorithm":"OcrDetect","text":["鐧诲綍璁板綍"],"roi":[237,50,771,242]}`锛堜笌 B 鏈?`AccountManagerBili` 瀵归綈锛? |
 | 恢复 master | `git checkout master --` 账号切换区块：LoginOther.next 移除 AccountManagerPageConfirm，删除该任务定义，AccountManagerOfficial 还原为纯 roi 模板匹配（整文件与 master 仅此区块差异，已验 0 diff） |
+| 修改 ROI（+7 -7） | DepotAllTab `[452,0,281,134]`→`[450,0,300,138]`；DepotMaterialTab `[1026,0,254,138]`→`[945,0,300,138]`；DepotMaterialTabClicked `[1026,0,254,138]`→`[945,0,300,138]`；与上游 `da5ccfe4ed` diff 逐值一致；JSON 校验通过（941 tasks） |
+
+### [TGT] `resource/template/Depot/DepotAllTab.png` 
+
+| 操作 | 说明 |
+|------|------|
+| 上游重截替换 | 2116 B → 2061 B，181x34 → 77x34（取上游 `30ff4de669` 优化终版） |
+
+### [TGT] `resource/template/Depot/DepotMaterialTab.png` 
+
+| 操作 | 说明 |
+|------|------|
+| 上游重截替换 | 6366 B → 4171 B，170x38 → 131x33（同上） |
+
+### [TGT] `resource/template/Depot/DepotMaterialTabClicked.png` 
+
+| 操作 | 说明 |
+|------|------|
+| 上游重截替换 | 1482 B → 1636 B，165x40 → 120x34（同上） |
 
 ### [TGT] `resource/template/WakeUp/AccountManager/AccountManagerPageConfirm.png` 
 
